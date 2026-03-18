@@ -42,7 +42,13 @@ function checkCooldown(userId, commandName) {
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) throw new Error("BOT_TOKEN이 .env 파일에 설정되어 있지 않습니다.");
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessageReactions,
+  ],
+  partials: [0, 1, 2], // Channel, Message, Reaction
+});
 
 // ── Slash commands ──
 const commands = [
@@ -66,6 +72,12 @@ const commands = [
   new SlashCommandBuilder()
     .setName("핑설정")
     .setDescription("알림 시 멘션할 역할을 설정합니다")
+    .addStringOption((o) =>
+      o.setName("플랫폼").setDescription("핑을 설정할 플랫폼").setRequired(true)
+        .addChoices(
+          { name: "치지직", value: "chzzk" },
+          { name: "YouTube", value: "youtube" },
+        ))
     .addStringOption((o) =>
       o.setName("대상").setDescription("멘션할 역할").setRequired(true)
         .addChoices(
@@ -104,6 +116,24 @@ const commands = [
         ))
     .addStringOption((o) => o.setName("색상").setDescription("임베드 색상 (예: #FF0000, #00FFA3)").setRequired(false))
     .addStringOption((o) => o.setName("설명").setDescription("임베드 안에 표시할 추가 문구 (비우려면 '없음' 입력)").setRequired(false))
+    .setDefaultMemberPermissions(0x8),
+
+  new SlashCommandBuilder()
+    .setName("반응역할")
+    .setDescription("이모지 클릭 시 역할을 부여하는 메시지를 설정합니다")
+    .addStringOption((o) => o.setName("이모지").setDescription("이모지 (예: 🎮)").setRequired(true))
+    .addRoleOption((o) => o.setName("역할").setDescription("부여할 역할").setRequired(true))
+    .setDefaultMemberPermissions(0x8),
+
+  new SlashCommandBuilder()
+    .setName("반응역할제거")
+    .setDescription("반응 역할에서 이모지-역할 매핑을 제거합니다")
+    .addStringOption((o) => o.setName("이모지").setDescription("제거할 이모지").setRequired(true))
+    .setDefaultMemberPermissions(0x8),
+
+  new SlashCommandBuilder()
+    .setName("반응역할초기화")
+    .setDescription("반응 역할 메시지를 삭제하고 초기화합니다")
     .setDefaultMemberPermissions(0x8),
 
   new SlashCommandBuilder()
@@ -204,19 +234,22 @@ async function handleCommand(interaction, commandName) {
 
   // /핑설정
   else if (commandName === "핑설정") {
+    const platform = interaction.options.getString("플랫폼");
     const target = interaction.options.getString("대상");
+    const configKey = platform === "youtube" ? "youtube_mention_role_id" : "mention_role_id";
+    const label = platform === "youtube" ? "YouTube" : "치지직";
 
     if (target === "everyone") {
-      config.set("mention_role_id", "everyone");
-      await interaction.reply("✅ 알림 시 `@everyone`을 멘션합니다.");
+      config.set(configKey, "everyone");
+      await interaction.reply(`✅ **${label}** 알림 시 \`@everyone\`을 멘션합니다.`);
     } else if (target === "role") {
       const role = interaction.options.getRole("역할");
-      if (!role) return interaction.reply("❌ 역할을 선택해주세요.");
-      config.set("mention_role_id", role.id);
-      await interaction.reply(`✅ 알림 시 <@&${role.id}> 역할을 멘션합니다.`);
+      if (!role) return interaction.reply({ content: "❌ 역할을 선택해주세요.", ephemeral: true });
+      config.set(configKey, role.id);
+      await interaction.reply(`✅ **${label}** 알림 시 <@&${role.id}> 역할을 멘션합니다.`);
     } else {
-      config.set("mention_role_id", null);
-      await interaction.reply("✅ 알림 시 멘션을 하지 않습니다.");
+      config.set(configKey, null);
+      await interaction.reply(`✅ **${label}** 알림 시 멘션을 하지 않습니다.`);
     }
   }
 
@@ -250,6 +283,133 @@ async function handleCommand(interaction, commandName) {
     await interaction.reply(`✅ **${labels[type]}** 임베드가 변경되었습니다.\n${changes.join("\n")}`);
   }
 
+  // /반응역할
+  else if (commandName === "반응역할") {
+    await interaction.deferReply({ ephemeral: true });
+    const emoji = interaction.options.getString("이모지").trim();
+    const role = interaction.options.getRole("역할");
+
+    // Validate emoji (unicode or custom <:name:id>)
+    const isUnicode = /\p{Emoji_Presentation}/u.test(emoji);
+    const customMatch = emoji.match(/^<a?:\w+:(\d+)>$/);
+    if (!isUnicode && !customMatch) {
+      return interaction.editReply("❌ 올바른 이모지를 입력해주세요.");
+    }
+
+    const mappings = config.get("reaction_roles.mappings") || {};
+    mappings[emoji] = role.id;
+
+    let msgId = config.get("reaction_roles.message_id");
+    let chId = config.get("reaction_roles.channel_id");
+
+    // Build embed
+    const lines = Object.entries(mappings).map(([e, rId]) => `${e} → <@&${rId}>`);
+    const embed = new EmbedBuilder()
+      .setTitle("🎭 역할 선택")
+      .setDescription("아래 이모지를 클릭해서 역할을 받으세요!\n다시 클릭하면 역할이 제거됩니다.\n\n" + lines.join("\n"))
+      .setColor(0x5865f2);
+
+    try {
+      if (msgId && chId) {
+        // Update existing message
+        const channel = client.channels.cache.get(chId);
+        if (channel) {
+          try {
+            const msg = await channel.messages.fetch(msgId);
+            await msg.edit({ embeds: [embed] });
+            await msg.react(emoji);
+          } catch {
+            // Message deleted, create new one
+            msgId = null;
+          }
+        }
+      }
+
+      if (!msgId) {
+        // Create new message
+        const msg = await interaction.channel.send({ embeds: [embed] });
+        msgId = msg.id;
+        chId = msg.channelId;
+        // Add all reactions
+        for (const e of Object.keys(mappings)) {
+          await msg.react(e).catch(() => {});
+        }
+      }
+
+      config.set("reaction_roles.message_id", msgId);
+      config.set("reaction_roles.channel_id", chId);
+      config.set("reaction_roles.mappings", mappings);
+
+      await interaction.editReply(`✅ ${emoji} → <@&${role.id}> 매핑이 추가되었습니다.`);
+    } catch (e) {
+      console.error("[반응역할]", e.message);
+      await interaction.editReply("❌ 반응 역할 설정 실패. 봇에 역할 관리 권한이 있는지 확인해주세요.");
+    }
+  }
+
+  // /반응역할제거
+  else if (commandName === "반응역할제거") {
+    const emoji = interaction.options.getString("이모지").trim();
+    const mappings = config.get("reaction_roles.mappings") || {};
+
+    if (!(emoji in mappings)) {
+      return interaction.reply({ content: "❌ 해당 이모지 매핑이 없습니다.", ephemeral: true });
+    }
+
+    delete mappings[emoji];
+    config.set("reaction_roles.mappings", mappings);
+
+    const msgId = config.get("reaction_roles.message_id");
+    const chId = config.get("reaction_roles.channel_id");
+
+    if (msgId && chId) {
+      try {
+        const channel = client.channels.cache.get(chId);
+        const msg = await channel.messages.fetch(msgId);
+
+        if (Object.keys(mappings).length === 0) {
+          await msg.delete();
+          config.set("reaction_roles.message_id", null);
+          config.set("reaction_roles.channel_id", null);
+        } else {
+          const lines = Object.entries(mappings).map(([e, rId]) => `${e} → <@&${rId}>`);
+          const embed = new EmbedBuilder()
+            .setTitle("🎭 역할 선택")
+            .setDescription("아래 이모지를 클릭해서 역할을 받으세요!\n다시 클릭하면 역할이 제거됩니다.\n\n" + lines.join("\n"))
+            .setColor(0x5865f2);
+          await msg.edit({ embeds: [embed] });
+          // Remove the specific reaction
+          const reactions = msg.reactions.cache.get(emoji);
+          if (reactions) await reactions.remove().catch(() => {});
+        }
+      } catch (e) {
+        console.warn("[반응역할제거]", e.message);
+      }
+    }
+
+    await interaction.reply({ content: `✅ ${emoji} 매핑이 제거되었습니다.`, ephemeral: true });
+  }
+
+  // /반응역할초기화
+  else if (commandName === "반응역할초기화") {
+    const msgId = config.get("reaction_roles.message_id");
+    const chId = config.get("reaction_roles.channel_id");
+
+    if (msgId && chId) {
+      try {
+        const channel = client.channels.cache.get(chId);
+        const msg = await channel.messages.fetch(msgId);
+        await msg.delete();
+      } catch {}
+    }
+
+    config.set("reaction_roles.message_id", null);
+    config.set("reaction_roles.channel_id", null);
+    config.set("reaction_roles.mappings", {});
+
+    await interaction.reply({ content: "✅ 반응 역할이 초기화되었습니다.", ephemeral: true });
+  }
+
   // /문구설정
   else if (commandName === "문구설정") {
     const type = interaction.options.getString("종류");
@@ -274,15 +434,19 @@ async function handleCommand(interaction, commandName) {
     const ytId = config.get("youtube.channel_id");
     const ytName = config.get("youtube.channel_name");
 
-    const roleId = config.get("mention_role_id");
-    const mentionText = roleId === "everyone" ? "@everyone" : roleId ? `<@&${roleId}>` : "없음";
+    const chzzkRoleId = config.get("mention_role_id");
+    const ytRoleId = config.get("youtube_mention_role_id");
+    const chzzkPing = chzzkRoleId === "everyone" ? "@everyone" : chzzkRoleId ? `<@&${chzzkRoleId}>` : "없음";
+    const ytPing = ytRoleId === "everyone" ? "@everyone" : ytRoleId ? `<@&${ytRoleId}>` : "없음";
 
     const embed = new EmbedBuilder()
       .setTitle("📊 봇 설정 상태")
       .setColor(0x5865f2)
       .addFields(
         { name: "알림 채널", value: notifId ? `<#${notifId}>` : "미설정", inline: false },
-        { name: "알림 핑", value: mentionText, inline: false },
+        { name: "치지직 핑", value: chzzkPing, inline: true },
+        { name: "YouTube 핑", value: ytPing, inline: true },
+        { name: "\u200b", value: "\u200b", inline: false },
         { name: "치지직", value: chzzkId ? `${chzzkName || chzzkId} (${chzzkStatus === "OPEN" ? "🔴 방송 중" : "⚫ 오프라인"})` : "미설정", inline: false },
         { name: "YouTube", value: ytId ? (ytName || ytId) : "미설정", inline: false },
         { name: "📝 방송 시작 제목", value: config.get("messages.chzzk_start_title") || "🔴 {name} 방송 시작!", inline: true },
@@ -303,14 +467,15 @@ async function handleCommand(interaction, commandName) {
     const notifId = config.get("notification_channel_id");
     if (!notifId) return interaction.reply({ content: "❌ 먼저 `/알림채널`로 알림 채널을 설정해주세요.", ephemeral: true });
 
-    const notifChannel = client.channels.cache.get(notifId);
-    if (!notifChannel) return interaction.reply({ content: "❌ 알림 채널을 찾을 수 없습니다.", ephemeral: true });
-
     await interaction.deferReply();
+    const notifChannel = client.channels.cache.get(notifId) || await client.channels.fetch(notifId).catch(() => null);
+    if (!notifChannel) return interaction.editReply("❌ 알림 채널을 찾을 수 없습니다.");
     let sent = false;
 
-    const roleId = config.get("mention_role_id");
-    const mention = roleId === "everyone" ? "@everyone" : roleId ? `<@&${roleId}>` : "";
+    const chzzkRoleId = config.get("mention_role_id");
+    const chzzkMention = chzzkRoleId === "everyone" ? "@everyone" : chzzkRoleId ? `<@&${chzzkRoleId}>` : "";
+    const ytRoleId = config.get("youtube_mention_role_id");
+    const ytMention = ytRoleId === "everyone" ? "@everyone" : ytRoleId ? `<@&${ytRoleId}>` : "";
 
     // Chzzk test
     const chzzkId = config.get("chzzk.channel_id");
@@ -338,14 +503,14 @@ async function handleCommand(interaction, commandName) {
             .setURL(`https://chzzk.naver.com/live/${chzzkId}`)
             .setColor(parseColor(config.get("embeds.chzzk_start_color"), 0x00ffa3))
             .setTimestamp()
-            .setFooter({ text: "치지직 | ⚠️ 테스트 알림" });
+            .setFooter({ text: "치지직" });
 
           if (image) startEmbed.setAuthor({ name, iconURL: image }).setThumbnail(image);
           if (category) startEmbed.addFields({ name: "카테고리", value: category, inline: true });
 
           const startText = config.get("messages.chzzk_start") || "언니 방송 시작했다구!! 빨리 놀러 와~ 💗";
-          const startMsg = mention ? `${mention}\n${startText}` : startText;
-          await notifChannel.send({ content: `⚠️ **테스트**\n${startMsg}`, embeds: [startEmbed] });
+          const startMsg = chzzkMention ? `${chzzkMention}\n${startText}` : startText;
+          await notifChannel.send({ content: startMsg, embeds: [startEmbed] });
 
           // End
           const testEndTitle = (config.get("messages.chzzk_end_title") || "⚫ {name} 방송 끝!").replace("{name}", name);
@@ -355,13 +520,13 @@ async function handleCommand(interaction, commandName) {
             .setURL(`https://chzzk.naver.com/live/${chzzkId}`)
             .setColor(parseColor(config.get("embeds.chzzk_end_color"), 0x808080))
             .setTimestamp()
-            .setFooter({ text: "치지직 | ⚠️ 테스트 알림" });
+            .setFooter({ text: "치지직" });
 
           if (endDesc) endEmbed.setDescription(endDesc);
           if (image) endEmbed.setAuthor({ name, iconURL: image }).setThumbnail(image);
 
           const endText = config.get("messages.chzzk_end") || "오늘 방송 끝~! 다음에 또 보자 뿌잉 💤";
-          await notifChannel.send({ content: `⚠️ **테스트**\n${endText}`, embeds: [endEmbed] });
+          await notifChannel.send({ content: endText, embeds: [endEmbed] });
           sent = true;
         }
       } catch (e) {
@@ -391,13 +556,13 @@ async function handleCommand(interaction, commandName) {
             .setColor(parseColor(config.get("embeds.youtube_color"), 0xff0000))
             .setImage(`https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`)
             .setTimestamp()
-            .setFooter({ text: "YouTube | ⚠️ 테스트 알림" });
+            .setFooter({ text: "YouTube" });
 
           if (channelName) embed.setAuthor({ name: channelName });
 
           const ytText = config.get("messages.youtube_new") || "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕";
-          const ytMsg = mention ? `${mention}\n${ytText}` : ytText;
-          await notifChannel.send({ content: `⚠️ **테스트**\n${ytMsg}`, embeds: [embed] });
+          const ytMsg = ytMention ? `${ytMention}\n${ytText}` : ytText;
+          await notifChannel.send({ content: ytMsg, embeds: [embed] });
           sent = true;
         }
       } catch (e) {
@@ -409,6 +574,53 @@ async function handleCommand(interaction, commandName) {
     else await interaction.editReply("❌ 모니터링할 채널이 설정되지 않았습니다.");
   }
 }
+
+// ── Reaction role events ──
+client.on("messageReactionAdd", async (reaction, user) => {
+  if (user.bot) return;
+  try {
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+
+    const msgId = config.get("reaction_roles.message_id");
+    if (reaction.message.id !== msgId) return;
+
+    const mappings = config.get("reaction_roles.mappings") || {};
+    const emoji = reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name;
+    const roleId = mappings[emoji];
+    if (!roleId) return;
+
+    const guild = reaction.message.guild;
+    const member = await guild.members.fetch(user.id);
+    await member.roles.add(roleId);
+    console.log(`[반응역할] ${user.tag} +역할 ${roleId}`);
+  } catch (e) {
+    console.error("[반응역할] 역할 부여 실패:", e.message);
+  }
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  if (user.bot) return;
+  try {
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+
+    const msgId = config.get("reaction_roles.message_id");
+    if (reaction.message.id !== msgId) return;
+
+    const mappings = config.get("reaction_roles.mappings") || {};
+    const emoji = reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name;
+    const roleId = mappings[emoji];
+    if (!roleId) return;
+
+    const guild = reaction.message.guild;
+    const member = await guild.members.fetch(user.id);
+    await member.roles.remove(roleId);
+    console.log(`[반응역할] ${user.tag} -역할 ${roleId}`);
+  } catch (e) {
+    console.error("[반응역할] 역할 제거 실패:", e.message);
+  }
+});
 
 // ── Global error handlers ──
 process.on("unhandledRejection", (err) => {

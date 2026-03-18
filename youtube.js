@@ -67,12 +67,12 @@ async function check(client) {
   if (latest.pubDate) embed.addFields({ name: "업로드", value: new Date(latest.pubDate).toLocaleDateString("ko-KR"), inline: true });
   embed.setFooter({ text: "YouTube" });
 
-  const roleId = config.get("mention_role_id");
+  const roleId = config.get("youtube_mention_role_id");
   const mention = roleId === "everyone" ? "@everyone" : roleId ? `<@&${roleId}>` : "";
   const ytText = config.get("messages.youtube_new") || "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕";
   const msg = mention ? `${mention}\n${ytText}` : ytText;
 
-  const notifChannel = client.channels.cache.get(notifId);
+  const notifChannel = client.channels.cache.get(notifId) || await client.channels.fetch(notifId).catch(() => null);
   if (notifChannel) {
     try {
       await notifChannel.send({ content: msg, embeds: [embed] });

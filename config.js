@@ -6,12 +6,13 @@ const CONFIG_PATH = path.join(__dirname, "config.json");
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 const ALLOWED_TOP_KEYS = new Set([
-  "notification_channel_id", "mention_role_id", "messages", "embeds", "chzzk", "youtube",
+  "notification_channel_id", "mention_role_id", "youtube_mention_role_id", "messages", "embeds", "chzzk", "youtube", "reaction_roles",
 ]);
 
 const DEFAULT_CONFIG = {
   notification_channel_id: null,
   mention_role_id: null,
+  youtube_mention_role_id: null,
   messages: {
     chzzk_start: "언니 방송 시작했다구!! 빨리 놀러 와~ 💗",
     chzzk_end: "오늘 방송 끝~! 다음에 또 보자 뿌잉 💤",
@@ -27,6 +28,11 @@ const DEFAULT_CONFIG = {
     chzzk_end_desc: "",
     youtube_color: "#FF0000",
     youtube_desc: "",
+  },
+  reaction_roles: {
+    message_id: null,
+    channel_id: null,
+    mappings: {},
   },
   chzzk: {
     channel_id: null,

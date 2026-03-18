@@ -31,7 +31,7 @@ async function check(client) {
 
   const current = content.status || "CLOSE";
   const previous = config.get("chzzk.last_status") || "CLOSE";
-  const notifChannel = client.channels.cache.get(notifId);
+  const notifChannel = client.channels.cache.get(notifId) || await client.channels.fetch(notifId).catch(() => null);
   if (!notifChannel) return;
 
   const ch = content.channel || {};
