@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, Collection } = require("discord.js");
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes, Collection, Partials } = require("discord.js");
 const config = require("./config");
 const chzzk = require("./chzzk");
 const youtube = require("./youtube");
@@ -47,7 +47,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessageReactions,
   ],
-  partials: [0, 1, 2], // Channel, Message, Reaction
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
 });
 
 // ── Slash commands ──
@@ -143,6 +143,39 @@ const commands = [
   new SlashCommandBuilder()
     .setName("테스트")
     .setDescription("치지직/YouTube 알림을 테스트합니다")
+    .setDefaultMemberPermissions(0x8),
+
+  new SlashCommandBuilder()
+    .setName("굿즈")
+    .setDescription("굿즈 정보를 확인합니다"),
+
+  new SlashCommandBuilder()
+    .setName("굿즈설정")
+    .setDescription("굿즈 URL과 문구를 설정합니다")
+    .addStringOption((o) => o.setName("url").setDescription("굿즈 URL").setRequired(false))
+    .addStringOption((o) => o.setName("제목").setDescription("임베드 제목").setRequired(false))
+    .addStringOption((o) => o.setName("문구").setDescription("홍보 문구").setRequired(false))
+    .setDefaultMemberPermissions(0x8),
+
+  new SlashCommandBuilder()
+    .setName("클립")
+    .setDescription("언니의 명장면 클립을 랜덤으로 보여줍니다"),
+
+  new SlashCommandBuilder()
+    .setName("클립추가")
+    .setDescription("클립을 추가합니다")
+    .addStringOption((o) => o.setName("제목").setDescription("클립 제목").setRequired(true))
+    .addStringOption((o) => o.setName("url").setDescription("클립 URL").setRequired(true))
+    .setDefaultMemberPermissions(0x8),
+
+  new SlashCommandBuilder()
+    .setName("클립목록")
+    .setDescription("등록된 클립 목록을 확인합니다"),
+
+  new SlashCommandBuilder()
+    .setName("클립삭제")
+    .setDescription("클립을 삭제합니다")
+    .addIntegerOption((o) => o.setName("번호").setDescription("삭제할 클립 번호").setRequired(true))
     .setDefaultMemberPermissions(0x8),
 ];
 
@@ -572,6 +605,138 @@ async function handleCommand(interaction, commandName) {
 
     if (sent) await interaction.editReply("✅ 테스트 알림을 전송했습니다! (치지직 시작/종료 + YouTube)");
     else await interaction.editReply("❌ 모니터링할 채널이 설정되지 않았습니다.");
+  }
+
+  // /굿즈
+  else if (commandName === "굿즈") {
+    const goodsUrl = config.get("goods.url");
+    if (!goodsUrl) {
+      return interaction.reply({ content: "📭 굿즈가 아직 설정되지 않았어요. 관리자가 `/굿즈설정`으로 설정해주세요!", ephemeral: true });
+    }
+
+    const title = config.get("goods.title") || "🛍️ 굿즈샵";
+    const desc = config.get("goods.description") || "";
+
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setURL(goodsUrl)
+      .setColor(0xFF69B4)
+      .setTimestamp();
+
+    if (desc) embed.setDescription(desc);
+
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // /굿즈설정
+  else if (commandName === "굿즈설정") {
+    const url = interaction.options.getString("url");
+    const title = interaction.options.getString("제목");
+    const desc = interaction.options.getString("문구");
+    const changes = [];
+
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          return interaction.reply({ content: "❌ https:// 로 시작하는 URL만 가능합니다.", ephemeral: true });
+        }
+      } catch {
+        return interaction.reply({ content: "❌ 올바른 URL을 입력해주세요.", ephemeral: true });
+      }
+      config.set("goods.url", url);
+      changes.push(`URL → ${url}`);
+    }
+
+    if (title) {
+      config.set("goods.title", sanitizeText(title, 200));
+      changes.push(`제목 → ${title}`);
+    }
+
+    if (desc) {
+      config.set("goods.description", sanitizeText(desc, MAX_EMBED_DESC_LENGTH));
+      changes.push(`문구 → ${desc}`);
+    }
+
+    if (changes.length === 0) {
+      return interaction.reply({ content: "❌ URL, 제목, 문구 중 하나는 입력해주세요.", ephemeral: true });
+    }
+
+    await interaction.reply(`✅ 굿즈 설정이 변경되었습니다.\n${changes.join("\n")}`);
+  }
+
+  // /클립
+  else if (commandName === "클립") {
+    const clips = config.get("clips") || [];
+    if (clips.length === 0) {
+      return interaction.reply({ content: "📭 등록된 클립이 없어요. `/클립추가`로 클립을 추가해주세요!", ephemeral: true });
+    }
+
+    const clip = clips[Math.floor(Math.random() * clips.length)];
+    const embed = new EmbedBuilder()
+      .setTitle(`🎬 ${clip.title}`)
+      .setURL(clip.url)
+      .setColor(0xFF69B4)
+      .setFooter({ text: `클립 ${clips.indexOf(clip) + 1}/${clips.length}` });
+
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // /클립추가
+  else if (commandName === "클립추가") {
+    const title = sanitizeText(interaction.options.getString("제목"), 100);
+    const url = interaction.options.getString("url").trim();
+
+    // URL validation
+    try {
+      const parsed = new URL(url);
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        return interaction.reply({ content: "❌ https:// 로 시작하는 URL만 가능합니다.", ephemeral: true });
+      }
+    } catch {
+      return interaction.reply({ content: "❌ 올바른 URL을 입력해주세요.", ephemeral: true });
+    }
+
+    const clips = config.get("clips") || [];
+    if (clips.length >= 100) {
+      return interaction.reply({ content: "❌ 클립은 최대 100개까지 등록 가능합니다.", ephemeral: true });
+    }
+
+    clips.push({ title, url });
+    config.set("clips", clips);
+
+    await interaction.reply(`✅ 클립이 추가되었습니다! (총 ${clips.length}개)\n> **${title}**`);
+  }
+
+  // /클립목록
+  else if (commandName === "클립목록") {
+    const clips = config.get("clips") || [];
+    if (clips.length === 0) {
+      return interaction.reply({ content: "📭 등록된 클립이 없어요.", ephemeral: true });
+    }
+
+    const list = clips.map((c, i) => `**${i + 1}.** [${c.title}](${c.url})`).join("\n");
+    const embed = new EmbedBuilder()
+      .setTitle(`🎬 클립 목록 (${clips.length}개)`)
+      .setDescription(list.slice(0, 4000))
+      .setColor(0xFF69B4);
+
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // /클립삭제
+  else if (commandName === "클립삭제") {
+    const num = interaction.options.getInteger("번호");
+    const clips = config.get("clips") || [];
+
+    if (num < 1 || num > clips.length) {
+      return interaction.reply({ content: `❌ 1~${clips.length} 사이의 번호를 입력해주세요.`, ephemeral: true });
+    }
+
+    const removed = clips.splice(num - 1, 1)[0];
+    config.set("clips", clips);
+
+    await interaction.reply({ content: `✅ 클립 삭제됨: **${removed.title}** (남은 ${clips.length}개)`, ephemeral: true });
   }
 }
 

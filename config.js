@@ -6,7 +6,7 @@ const CONFIG_PATH = path.join(__dirname, "config.json");
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 const ALLOWED_TOP_KEYS = new Set([
-  "notification_channel_id", "mention_role_id", "youtube_mention_role_id", "messages", "embeds", "chzzk", "youtube", "reaction_roles",
+  "notification_channel_id", "mention_role_id", "youtube_mention_role_id", "messages", "embeds", "chzzk", "youtube", "reaction_roles", "clips", "goods",
 ]);
 
 const DEFAULT_CONFIG = {
@@ -34,6 +34,12 @@ const DEFAULT_CONFIG = {
     channel_id: null,
     mappings: {},
   },
+  goods: {
+    url: null,
+    title: "🛍️ 굿즈샵",
+    description: null,
+  },
+  clips: [],
   chzzk: {
     channel_id: null,
     last_status: "CLOSE",
