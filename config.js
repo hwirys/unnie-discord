@@ -44,10 +44,12 @@ const DEFAULT_CONFIG = {
     channel_id: null,
     last_status: "CLOSE",
     channel_name: null,
+    notify_end: false,
   },
   youtube: {
     channel_id: null,
     last_video_id: null,
+    last_short_id: null,
     channel_name: null,
   },
 };

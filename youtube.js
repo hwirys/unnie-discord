@@ -6,7 +6,11 @@ const parser = new RSSParser({
   customFields: { item: [["yt:videoId", "ytVideoId"]] },
 });
 
-const FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={id}";
+// Long-form videos use the channel feed (UC prefix).
+// Shorts are excluded from that feed; YouTube's auto-generated "UUSH" playlist
+// (uploads-shorts) returns shorts-only items.
+const VIDEO_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={id}";
+const SHORTS_FEED = "https://www.youtube.com/feeds/videos.xml?playlist_id=UUSH{suffix}";
 
 function parseColor(hex, fallback) {
   if (!hex) return fallback;
@@ -14,81 +18,133 @@ function parseColor(hex, fallback) {
   return isNaN(n) ? fallback : n;
 }
 
-async function check(client) {
-  const channelId = config.get("youtube.channel_id");
-  const notifId = config.get("notification_channel_id");
-  if (!channelId || !notifId) return;
-
-  let feed;
+async function fetchFeed(url) {
   try {
-    feed = await parser.parseURL(FEED_URL.replace("{id}", encodeURIComponent(channelId)));
+    return await parser.parseURL(url);
   } catch (e) {
-    console.warn("[YouTube] RSS 요청 실패:", e.message);
-    return;
+    console.warn(`[YouTube] RSS 요청 실패 (${url}):`, e.message);
+    return null;
   }
+}
 
-  if (!feed.items || feed.items.length === 0) return;
+function pickLatestId(feed) {
+  if (!feed?.items?.length) return null;
+  const item = feed.items[0];
+  return {
+    item,
+    videoId: item.ytVideoId || item.id?.split(":").pop() || null,
+  };
+}
 
-  const latest = feed.items[0];
-  const videoId = latest.ytVideoId || latest.id?.split(":").pop();
-  if (!videoId) return;
-
-  const lastVideoId = config.get("youtube.last_video_id");
-
-  if (lastVideoId === null) {
-    config.set("youtube.last_video_id", videoId);
-    config.set("youtube.channel_name", latest.author || feed.title || null);
-    console.log(`[YouTube] 최초 영상 ID 기록: ${videoId}`);
-    return;
-  }
-
-  if (videoId === lastVideoId) return;
-
-  const videoTitle = latest.title || "";
-  const channelName = latest.author || feed.title || "";
-  const videoUrl = latest.link || `https://www.youtube.com/watch?v=${videoId}`;
+async function sendNotification(client, notifId, { item, videoId, isShort, channelName }) {
+  const videoTitle = item.title || "";
+  const url = isShort
+    ? `https://www.youtube.com/shorts/${videoId}`
+    : (item.link || `https://www.youtube.com/watch?v=${videoId}`);
   const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
   const customDesc = config.get("embeds.youtube_desc") || "";
   const description = customDesc ? `${customDesc}\n\n${videoTitle}` : videoTitle;
   const color = parseColor(config.get("embeds.youtube_color"), 0xff0000);
-  const ytTitle = config.get("messages.youtube_title") || "📺 새 영상 업로드!";
+  const defaultTitle = isShort ? "🩳 새 Shorts 업로드!" : "📺 새 영상 업로드!";
+  const ytTitle = isShort
+    ? (config.get("messages.youtube_shorts_title") || defaultTitle)
+    : (config.get("messages.youtube_title") || defaultTitle);
 
   const embed = new EmbedBuilder()
     .setTitle(ytTitle)
     .setDescription(description)
-    .setURL(videoUrl)
+    .setURL(url)
     .setColor(color)
     .setImage(thumbnail)
     .setTimestamp();
 
   if (channelName) embed.setAuthor({ name: channelName });
   embed.addFields({ name: "채널", value: channelName || "알 수 없음", inline: true });
-  if (latest.pubDate) embed.addFields({ name: "업로드", value: new Date(latest.pubDate).toLocaleDateString("ko-KR"), inline: true });
-  embed.setFooter({ text: "YouTube" });
+  if (item.pubDate) embed.addFields({ name: "업로드", value: new Date(item.pubDate).toLocaleDateString("ko-KR"), inline: true });
+  embed.setFooter({ text: isShort ? "YouTube Shorts" : "YouTube" });
 
   const roleId = config.get("youtube_mention_role_id");
   const mention = roleId === "everyone" ? "@everyone" : roleId ? `<@&${roleId}>` : "";
-  const ytText = config.get("messages.youtube_new") || "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕";
+  const defaultText = isShort
+    ? "언니가 Shorts 올렸어! 짧고 굵게 보러가자~ 🩳✨"
+    : "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕";
+  const ytText = isShort
+    ? (config.get("messages.youtube_shorts_new") || defaultText)
+    : (config.get("messages.youtube_new") || defaultText);
   const msg = mention ? `${mention}\n${ytText}` : ytText;
 
   const notifChannel = client.channels.cache.get(notifId) || await client.channels.fetch(notifId).catch(() => null);
-  if (notifChannel) {
-    try {
-      await notifChannel.send({ content: msg, embeds: [embed] });
-      console.log(`[YouTube] 새 영상 알림 전송: ${videoTitle}`);
-    } catch (e) {
-      console.error("[YouTube] 알림 전송 실패:", e.message);
+  if (!notifChannel) return;
+
+  try {
+    await notifChannel.send({ content: msg, embeds: [embed] });
+    console.log(`[YouTube] ${isShort ? "Shorts" : "새 영상"} 알림 전송: ${videoTitle}`);
+  } catch (e) {
+    console.error("[YouTube] 알림 전송 실패:", e.message);
+  }
+}
+
+async function check(client) {
+  const channelId = config.get("youtube.channel_id");
+  const notifId = config.get("notification_channel_id");
+  if (!channelId || !notifId) return;
+
+  const suffix = channelId.replace(/^UC/, "");
+  const [videoFeed, shortsFeed] = await Promise.all([
+    fetchFeed(VIDEO_FEED.replace("{id}", encodeURIComponent(channelId))),
+    fetchFeed(SHORTS_FEED.replace("{suffix}", encodeURIComponent(suffix))),
+  ]);
+
+  const latestVideo = pickLatestId(videoFeed);
+  const latestShort = pickLatestId(shortsFeed);
+
+  const channelName =
+    latestVideo?.item?.author ||
+    videoFeed?.title ||
+    latestShort?.item?.author ||
+    null;
+
+  // Long-form video tracking
+  if (latestVideo?.videoId) {
+    const lastVideoId = config.get("youtube.last_video_id");
+    if (lastVideoId === null) {
+      config.set("youtube.last_video_id", latestVideo.videoId);
+      if (channelName) config.set("youtube.channel_name", channelName);
+      console.log(`[YouTube] 최초 영상 ID 기록: ${latestVideo.videoId}`);
+    } else if (latestVideo.videoId !== lastVideoId) {
+      await sendNotification(client, notifId, {
+        item: latestVideo.item,
+        videoId: latestVideo.videoId,
+        isShort: false,
+        channelName,
+      });
+      config.set("youtube.last_video_id", latestVideo.videoId);
+      if (channelName) config.set("youtube.channel_name", channelName);
     }
   }
 
-  config.set("youtube.last_video_id", videoId);
-  if (channelName) config.set("youtube.channel_name", channelName);
+  // Shorts tracking
+  if (latestShort?.videoId) {
+    const lastShortId = config.get("youtube.last_short_id");
+    if (lastShortId === null) {
+      config.set("youtube.last_short_id", latestShort.videoId);
+      console.log(`[YouTube] 최초 Shorts ID 기록: ${latestShort.videoId}`);
+    } else if (latestShort.videoId !== lastShortId) {
+      await sendNotification(client, notifId, {
+        item: latestShort.item,
+        videoId: latestShort.videoId,
+        isShort: true,
+        channelName,
+      });
+      config.set("youtube.last_short_id", latestShort.videoId);
+    }
+  }
 }
 
 function start(client) {
   setInterval(() => check(client), 3 * 60_000);
-  console.log("[YouTube] 모니터링 시작 (3분 간격)");
+  console.log("[YouTube] 모니터링 시작 (3분 간격, 영상 + Shorts)");
 }
 
 module.exports = { start, check };

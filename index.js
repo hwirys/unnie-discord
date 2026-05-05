@@ -260,6 +260,7 @@ async function handleCommand(interaction, commandName) {
 
     config.set("youtube.channel_id", channelId);
     config.set("youtube.last_video_id", null);
+    config.set("youtube.last_short_id", null);
     config.set("youtube.channel_name", null);
 
     await interaction.editReply(`✅ YouTube 채널이 \`${channelId}\`(으)로 설정되었습니다.`);
