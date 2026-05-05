@@ -12,6 +12,11 @@ const parser = new RSSParser({
 const VIDEO_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={id}";
 const SHORTS_FEED = "https://www.youtube.com/feeds/videos.xml?playlist_id=UUSH{suffix}";
 
+const TARGETS = [
+  { configKey: "youtube", isSub: false },
+  { configKey: "youtube_sub", isSub: true },
+];
+
 function parseColor(hex, fallback) {
   if (!hex) return fallback;
   const n = parseInt(hex.replace("#", ""), 16);
@@ -36,7 +41,7 @@ function pickLatestId(feed) {
   };
 }
 
-async function sendNotification(client, notifId, { item, videoId, isShort, channelName }) {
+async function sendNotification(client, notifId, { item, videoId, isShort, isSub, channelName }) {
   const videoTitle = item.title || "";
   const url = isShort
     ? `https://www.youtube.com/shorts/${videoId}`
@@ -66,12 +71,18 @@ async function sendNotification(client, notifId, { item, videoId, isShort, chann
 
   const roleId = config.get("youtube_mention_role_id");
   const mention = roleId === "everyone" ? "@everyone" : roleId ? `<@&${roleId}>` : "";
-  const defaultText = isShort
-    ? "언니가 Shorts 올렸어! 짧고 굵게 보러가자~ 🩳✨"
-    : "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕";
-  const ytText = isShort
-    ? (config.get("messages.youtube_shorts_new") || defaultText)
-    : (config.get("messages.youtube_new") || defaultText);
+
+  let ytText;
+  if (isSub) {
+    ytText = config.get("messages.youtube_sub_new") || "언니의 부채널에도 영상이 올라왔어~";
+  } else {
+    const defaultText = isShort
+      ? "언니가 Shorts 올렸어! 짧고 굵게 보러가자~ 🩳✨"
+      : "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕";
+    ytText = isShort
+      ? (config.get("messages.youtube_shorts_new") || defaultText)
+      : (config.get("messages.youtube_new") || defaultText);
+  }
   const msg = mention ? `${mention}\n${ytText}` : ytText;
 
   const notifChannel = client.channels.cache.get(notifId) || await client.channels.fetch(notifId).catch(() => null);
@@ -79,16 +90,16 @@ async function sendNotification(client, notifId, { item, videoId, isShort, chann
 
   try {
     await notifChannel.send({ content: msg, embeds: [embed] });
-    console.log(`[YouTube] ${isShort ? "Shorts" : "새 영상"} 알림 전송: ${videoTitle}`);
+    const label = isSub ? "부채널 " : "";
+    console.log(`[YouTube] ${label}${isShort ? "Shorts" : "새 영상"} 알림 전송: ${videoTitle}`);
   } catch (e) {
     console.error("[YouTube] 알림 전송 실패:", e.message);
   }
 }
 
-async function check(client) {
-  const channelId = config.get("youtube.channel_id");
-  const notifId = config.get("notification_channel_id");
-  if (!channelId || !notifId) return;
+async function checkTarget(client, notifId, { configKey, isSub }) {
+  const channelId = config.get(`${configKey}.channel_id`);
+  if (!channelId) return;
 
   const suffix = channelId.replace(/^UC/, "");
   const [videoFeed, shortsFeed] = await Promise.all([
@@ -107,44 +118,54 @@ async function check(client) {
 
   // Long-form video tracking
   if (latestVideo?.videoId) {
-    const lastVideoId = config.get("youtube.last_video_id");
+    const lastVideoId = config.get(`${configKey}.last_video_id`);
     if (lastVideoId === null) {
-      config.set("youtube.last_video_id", latestVideo.videoId);
-      if (channelName) config.set("youtube.channel_name", channelName);
-      console.log(`[YouTube] 최초 영상 ID 기록: ${latestVideo.videoId}`);
+      config.set(`${configKey}.last_video_id`, latestVideo.videoId);
+      if (channelName) config.set(`${configKey}.channel_name`, channelName);
+      console.log(`[YouTube] ${isSub ? "부채널 " : ""}최초 영상 ID 기록: ${latestVideo.videoId}`);
     } else if (latestVideo.videoId !== lastVideoId) {
       await sendNotification(client, notifId, {
         item: latestVideo.item,
         videoId: latestVideo.videoId,
         isShort: false,
+        isSub,
         channelName,
       });
-      config.set("youtube.last_video_id", latestVideo.videoId);
-      if (channelName) config.set("youtube.channel_name", channelName);
+      config.set(`${configKey}.last_video_id`, latestVideo.videoId);
+      if (channelName) config.set(`${configKey}.channel_name`, channelName);
     }
   }
 
   // Shorts tracking
   if (latestShort?.videoId) {
-    const lastShortId = config.get("youtube.last_short_id");
+    const lastShortId = config.get(`${configKey}.last_short_id`);
     if (lastShortId === null) {
-      config.set("youtube.last_short_id", latestShort.videoId);
-      console.log(`[YouTube] 최초 Shorts ID 기록: ${latestShort.videoId}`);
+      config.set(`${configKey}.last_short_id`, latestShort.videoId);
+      console.log(`[YouTube] ${isSub ? "부채널 " : ""}최초 Shorts ID 기록: ${latestShort.videoId}`);
     } else if (latestShort.videoId !== lastShortId) {
       await sendNotification(client, notifId, {
         item: latestShort.item,
         videoId: latestShort.videoId,
         isShort: true,
+        isSub,
         channelName,
       });
-      config.set("youtube.last_short_id", latestShort.videoId);
+      config.set(`${configKey}.last_short_id`, latestShort.videoId);
     }
+  }
+}
+
+async function check(client) {
+  const notifId = config.get("notification_channel_id");
+  if (!notifId) return;
+  for (const target of TARGETS) {
+    await checkTarget(client, notifId, target);
   }
 }
 
 function start(client) {
   setInterval(() => check(client), 3 * 60_000);
-  console.log("[YouTube] 모니터링 시작 (3분 간격, 영상 + Shorts)");
+  console.log("[YouTube] 모니터링 시작 (3분 간격, 메인+부채널 영상+Shorts)");
 }
 
 module.exports = { start, check };
