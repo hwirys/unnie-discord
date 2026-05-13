@@ -81,26 +81,28 @@ async function check(client) {
     config.set("chzzk.channel_name", name);
 
   } else if (current === "CLOSE" && previous === "OPEN") {
-    const customDesc = config.get("embeds.chzzk_end_desc") || "";
-    const endTitle = (config.get("messages.chzzk_end_title") || "⚫ {name} 방송 끝!").replace("{name}", name);
-    const color = parseColor(config.get("embeds.chzzk_end_color"), 0x808080);
+    if (config.get("chzzk.notify_end")) {
+      const customDesc = config.get("embeds.chzzk_end_desc") || "";
+      const endTitle = (config.get("messages.chzzk_end_title") || "⚫ {name} 방송 끝!").replace("{name}", name);
+      const color = parseColor(config.get("embeds.chzzk_end_color"), 0x808080);
 
-    const embed = new EmbedBuilder()
-      .setTitle(endTitle)
-      .setURL(`https://chzzk.naver.com/live/${channelId}`)
-      .setColor(color)
-      .setTimestamp();
+      const embed = new EmbedBuilder()
+        .setTitle(endTitle)
+        .setURL(`https://chzzk.naver.com/live/${channelId}`)
+        .setColor(color)
+        .setTimestamp();
 
-    if (customDesc) embed.setDescription(customDesc);
-    if (image) embed.setAuthor({ name, iconURL: image }).setThumbnail(image);
-    embed.setFooter({ text: "치지직" });
+      if (customDesc) embed.setDescription(customDesc);
+      if (image) embed.setAuthor({ name, iconURL: image }).setThumbnail(image);
+      embed.setFooter({ text: "치지직" });
 
-    try {
-      const endText = config.get("messages.chzzk_end") || "오늘 방송 끝~! 다음에 또 보자 뿌잉 💤";
-      await notifChannel.send({ content: endText, embeds: [embed] });
-      console.log(`[치지직] 방송 종료 알림 전송: ${name}`);
-    } catch (e) {
-      console.error("[치지직] 종료 알림 전송 실패:", e.message);
+      try {
+        const endText = config.get("messages.chzzk_end") || "오늘 방송 끝~! 다음에 또 보자 뿌잉 💤";
+        await notifChannel.send({ content: endText, embeds: [embed] });
+        console.log(`[치지직] 방송 종료 알림 전송: ${name}`);
+      } catch (e) {
+        console.error("[치지직] 종료 알림 전송 실패:", e.message);
+      }
     }
 
     config.set("chzzk.last_status", "CLOSE");
