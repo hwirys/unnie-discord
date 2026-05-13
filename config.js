@@ -18,9 +18,12 @@ const DEFAULT_CONFIG = {
     chzzk_end: "오늘 방송 끝~! 다음에 또 보자 뿌잉 💤",
     youtube_new: "언니가 영상 올렸어!! 안 보면 손해야~ 🎬💕",
     youtube_sub_new: "언니의 부채널에도 영상이 올라왔어~",
+    youtube_post_new: "언니가 새 커뮤니티 게시물을 올렸어! 📝",
+    youtube_post_sub_new: "부채널에 새 커뮤니티 게시물이 올라왔어~ 📝",
     chzzk_start_title: "🔴 {name} 방송 시작!",
     chzzk_end_title: "⚫ {name} 방송 끝!",
     youtube_title: "📺 새 영상 업로드!",
+    youtube_post_title: "📝 새 커뮤니티 게시물!",
   },
   embeds: {
     chzzk_start_color: "#00FFA3",
@@ -51,12 +54,14 @@ const DEFAULT_CONFIG = {
     channel_id: null,
     last_video_id: null,
     last_short_id: null,
+    last_post_id: null,
     channel_name: null,
   },
   youtube_sub: {
     channel_id: null,
     last_video_id: null,
     last_short_id: null,
+    last_post_id: null,
     channel_name: null,
   },
 };

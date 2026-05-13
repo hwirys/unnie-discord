@@ -11,6 +11,9 @@ const parser = new RSSParser({
 // (uploads-shorts) returns shorts-only items.
 const VIDEO_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id={id}";
 const SHORTS_FEED = "https://www.youtube.com/feeds/videos.xml?playlist_id=UUSH{suffix}";
+// Community posts: no official feed — local RSSHub container handles it.
+const RSSHUB_BASE = process.env.RSSHUB_BASE || "http://localhost:1200";
+const COMMUNITY_FEED = `${RSSHUB_BASE}/youtube/community/{id}`;
 
 const TARGETS = [
   { configKey: "youtube", isSub: false },
@@ -39,6 +42,36 @@ function pickLatestId(feed) {
     item,
     videoId: item.ytVideoId || item.id?.split(":").pop() || null,
   };
+}
+
+function pickLatestPost(feed) {
+  if (!feed?.items?.length) return null;
+  const item = feed.items[0];
+  const link = item.link || item.guid || "";
+  const m = /\/post\/([A-Za-z0-9_-]+)/.exec(link);
+  return { item, postId: m ? m[1] : link, link };
+}
+
+function htmlToText(html) {
+  if (!html) return "";
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function firstImageFromHtml(html) {
+  if (!html) return null;
+  const m = /<img[^>]+src="([^"]+)"/i.exec(html);
+  return m ? m[1] : null;
 }
 
 async function sendNotification(client, notifId, { item, videoId, isShort, isSub, channelName }) {
@@ -97,14 +130,60 @@ async function sendNotification(client, notifId, { item, videoId, isShort, isSub
   }
 }
 
+async function sendPostNotification(client, notifId, { item, postId, link, isSub, channelName }) {
+  const rawDesc = item.content || item["content:encoded"] || item.description || item.summary || "";
+  const text = htmlToText(rawDesc);
+  const image = firstImageFromHtml(rawDesc);
+  const url = link || `https://www.youtube.com/post/${postId}`;
+
+  const truncated = text.length > 1500 ? text.slice(0, 1500) + "…" : text;
+  const color = parseColor(config.get("embeds.youtube_color"), 0xff0000);
+  const titleKey = isSub ? "messages.youtube_post_title" : "messages.youtube_post_title";
+  const ytTitle = config.get(titleKey) || "📝 새 커뮤니티 게시물!";
+
+  const embed = new EmbedBuilder()
+    .setTitle(ytTitle)
+    .setURL(url)
+    .setColor(color)
+    .setTimestamp();
+
+  if (truncated) embed.setDescription(truncated);
+  if (channelName) embed.setAuthor({ name: channelName });
+  if (image) embed.setImage(image);
+  embed.addFields({ name: "채널", value: channelName || "알 수 없음", inline: true });
+  if (item.pubDate) embed.addFields({ name: "작성", value: new Date(item.pubDate).toLocaleDateString("ko-KR"), inline: true });
+  embed.setFooter({ text: "YouTube Community" });
+
+  const roleId = config.get("youtube_mention_role_id");
+  const mention = roleId === "everyone" ? "@everyone" : roleId ? `<@&${roleId}>` : "";
+  const defaultText = isSub
+    ? "부채널에 새 커뮤니티 게시물이 올라왔어~ 📝"
+    : "언니가 새 커뮤니티 게시물을 올렸어! 📝";
+  const ytText = isSub
+    ? (config.get("messages.youtube_post_sub_new") || defaultText)
+    : (config.get("messages.youtube_post_new") || defaultText);
+  const msg = mention ? `${mention}\n${ytText}` : ytText;
+
+  const notifChannel = client.channels.cache.get(notifId) || await client.channels.fetch(notifId).catch(() => null);
+  if (!notifChannel) return;
+
+  try {
+    await notifChannel.send({ content: msg, embeds: [embed] });
+    console.log(`[YouTube] ${isSub ? "부채널 " : ""}새 게시물 알림 전송: ${postId}`);
+  } catch (e) {
+    console.error("[YouTube] 게시물 알림 전송 실패:", e.message);
+  }
+}
+
 async function checkTarget(client, notifId, { configKey, isSub }) {
   const channelId = config.get(`${configKey}.channel_id`);
   if (!channelId) return;
 
   const suffix = channelId.replace(/^UC/, "");
-  const [videoFeed, shortsFeed] = await Promise.all([
+  const [videoFeed, shortsFeed, postFeed] = await Promise.all([
     fetchFeed(VIDEO_FEED.replace("{id}", encodeURIComponent(channelId))),
     fetchFeed(SHORTS_FEED.replace("{suffix}", encodeURIComponent(suffix))),
+    fetchFeed(COMMUNITY_FEED.replace("{id}", encodeURIComponent(channelId))),
   ]);
 
   const latestVideo = pickLatestId(videoFeed);
@@ -151,6 +230,25 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
         channelName,
       });
       config.set(`${configKey}.last_short_id`, latestShort.videoId);
+    }
+  }
+
+  // Community post tracking (via RSSHub)
+  const latestPost = pickLatestPost(postFeed);
+  if (latestPost?.postId) {
+    const lastPostId = config.get(`${configKey}.last_post_id`);
+    if (lastPostId === null) {
+      config.set(`${configKey}.last_post_id`, latestPost.postId);
+      console.log(`[YouTube] ${isSub ? "부채널 " : ""}최초 게시물 ID 기록: ${latestPost.postId}`);
+    } else if (latestPost.postId !== lastPostId) {
+      await sendPostNotification(client, notifId, {
+        item: latestPost.item,
+        postId: latestPost.postId,
+        link: latestPost.link,
+        isSub,
+        channelName,
+      });
+      config.set(`${configKey}.last_post_id`, latestPost.postId);
     }
   }
 }

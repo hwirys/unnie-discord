@@ -1,0 +1,25 @@
+[Unit]
+Description=Unnie Discord Bot (Chzzk/YouTube notifications)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sicdl
+WorkingDirectory=/home/sicdl/unnie-discord
+ExecStart=/usr/local/bin/node /home/sicdl/unnie-discord/index.js
+Restart=always
+RestartSec=10
+
+StandardOutput=append:/home/sicdl/unnie-discord/bot.log
+StandardError=append:/home/sicdl/unnie-discord/bot.log
+
+ProtectHome=false
+ProtectSystem=strict
+ReadWritePaths=/home/sicdl/unnie-discord
+PrivateDevices=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
