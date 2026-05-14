@@ -74,6 +74,34 @@ function firstImageFromHtml(html) {
   return m ? m[1] : null;
 }
 
+// Ring-buffer dedup: YouTube RSS occasionally reorders or returns partial entries,
+// so feed.items[0] can toggle between two recently-published videos. Tracking a
+// single "last_id" makes both look "new" on alternating polls and notifications
+// ping-pong forever. We keep the last N seen IDs per channel and only notify on
+// IDs that have never been seen.
+const SEEN_BUFFER_SIZE = 50;
+
+function hasSeen(configKey, listKey, id) {
+  const arr = config.get(`${configKey}.${listKey}`);
+  return Array.isArray(arr) && arr.includes(id);
+}
+
+function markSeen(configKey, listKey, id) {
+  let arr = config.get(`${configKey}.${listKey}`);
+  if (!Array.isArray(arr)) arr = [];
+  if (arr.includes(id)) return;
+  arr.unshift(id);
+  if (arr.length > SEEN_BUFFER_SIZE) arr.length = SEEN_BUFFER_SIZE;
+  config.set(`${configKey}.${listKey}`, arr);
+}
+
+function migrateSingleToBuffer(configKey, singleKey, listKey) {
+  const existing = config.get(`${configKey}.${listKey}`);
+  if (Array.isArray(existing) && existing.length > 0) return;
+  const single = config.get(`${configKey}.${singleKey}`);
+  if (single) markSeen(configKey, listKey, single);
+}
+
 async function sendNotification(client, notifId, { item, videoId, isShort, isSub, channelName }) {
   const videoTitle = item.title || "";
   const url = isShort
@@ -197,12 +225,15 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
 
   // Long-form video tracking
   if (latestVideo?.videoId) {
-    const lastVideoId = config.get(`${configKey}.last_video_id`);
-    if (lastVideoId === null) {
+    migrateSingleToBuffer(configKey, "last_video_id", "seen_video_ids");
+    const seenList = config.get(`${configKey}.seen_video_ids`);
+    const isFirstEver = !Array.isArray(seenList) || seenList.length === 0;
+    if (isFirstEver) {
+      markSeen(configKey, "seen_video_ids", latestVideo.videoId);
       config.set(`${configKey}.last_video_id`, latestVideo.videoId);
       if (channelName) config.set(`${configKey}.channel_name`, channelName);
       console.log(`[YouTube] ${isSub ? "부채널 " : ""}최초 영상 ID 기록: ${latestVideo.videoId}`);
-    } else if (latestVideo.videoId !== lastVideoId) {
+    } else if (!hasSeen(configKey, "seen_video_ids", latestVideo.videoId)) {
       await sendNotification(client, notifId, {
         item: latestVideo.item,
         videoId: latestVideo.videoId,
@@ -210,6 +241,7 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
         isSub,
         channelName,
       });
+      markSeen(configKey, "seen_video_ids", latestVideo.videoId);
       config.set(`${configKey}.last_video_id`, latestVideo.videoId);
       if (channelName) config.set(`${configKey}.channel_name`, channelName);
     }
@@ -217,11 +249,14 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
 
   // Shorts tracking
   if (latestShort?.videoId) {
-    const lastShortId = config.get(`${configKey}.last_short_id`);
-    if (lastShortId === null) {
+    migrateSingleToBuffer(configKey, "last_short_id", "seen_short_ids");
+    const seenList = config.get(`${configKey}.seen_short_ids`);
+    const isFirstEver = !Array.isArray(seenList) || seenList.length === 0;
+    if (isFirstEver) {
+      markSeen(configKey, "seen_short_ids", latestShort.videoId);
       config.set(`${configKey}.last_short_id`, latestShort.videoId);
       console.log(`[YouTube] ${isSub ? "부채널 " : ""}최초 Shorts ID 기록: ${latestShort.videoId}`);
-    } else if (latestShort.videoId !== lastShortId) {
+    } else if (!hasSeen(configKey, "seen_short_ids", latestShort.videoId)) {
       await sendNotification(client, notifId, {
         item: latestShort.item,
         videoId: latestShort.videoId,
@@ -229,6 +264,7 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
         isSub,
         channelName,
       });
+      markSeen(configKey, "seen_short_ids", latestShort.videoId);
       config.set(`${configKey}.last_short_id`, latestShort.videoId);
     }
   }
@@ -236,11 +272,14 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
   // Community post tracking (via RSSHub)
   const latestPost = pickLatestPost(postFeed);
   if (latestPost?.postId) {
-    const lastPostId = config.get(`${configKey}.last_post_id`);
-    if (lastPostId === null) {
+    migrateSingleToBuffer(configKey, "last_post_id", "seen_post_ids");
+    const seenList = config.get(`${configKey}.seen_post_ids`);
+    const isFirstEver = !Array.isArray(seenList) || seenList.length === 0;
+    if (isFirstEver) {
+      markSeen(configKey, "seen_post_ids", latestPost.postId);
       config.set(`${configKey}.last_post_id`, latestPost.postId);
       console.log(`[YouTube] ${isSub ? "부채널 " : ""}최초 게시물 ID 기록: ${latestPost.postId}`);
-    } else if (latestPost.postId !== lastPostId) {
+    } else if (!hasSeen(configKey, "seen_post_ids", latestPost.postId)) {
       await sendPostNotification(client, notifId, {
         item: latestPost.item,
         postId: latestPost.postId,
@@ -248,6 +287,7 @@ async function checkTarget(client, notifId, { configKey, isSub }) {
         isSub,
         channelName,
       });
+      markSeen(configKey, "seen_post_ids", latestPost.postId);
       config.set(`${configKey}.last_post_id`, latestPost.postId);
     }
   }

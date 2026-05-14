@@ -55,6 +55,9 @@ const DEFAULT_CONFIG = {
     last_video_id: null,
     last_short_id: null,
     last_post_id: null,
+    seen_video_ids: [],
+    seen_short_ids: [],
+    seen_post_ids: [],
     channel_name: null,
   },
   youtube_sub: {
@@ -62,6 +65,9 @@ const DEFAULT_CONFIG = {
     last_video_id: null,
     last_short_id: null,
     last_post_id: null,
+    seen_video_ids: [],
+    seen_short_ids: [],
+    seen_post_ids: [],
     channel_name: null,
   },
 };
